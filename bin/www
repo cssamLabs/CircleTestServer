@@ -1,0 +1,197 @@
+#!/usr/bin/env node
+
+/**
+ * Module dependencies.
+ */
+const app = require('../app');
+const debug = require('debug')('circletestserver:server');
+const http = require('http');
+const socket = require('socket.io');
+const shortid = require("shortid");
+
+/**
+ * Get port from environment and store in Express.
+ */
+const port = normalizePort(process.env.PORT || '3000');
+app.set('port', port);
+
+/**
+ * Create HTTP server.
+ */
+const server = http.createServer(app);
+
+/**
+ * Listen on provided port, on all network interfaces.
+ */
+
+server.listen(port);
+server.on('error', onError);
+server.on('listening', onListening);
+
+/**
+ * Normalize a port into a number, string, or false.
+ */
+
+function normalizePort(val) {
+  const port = parseInt(val, 10);
+
+  if (isNaN(port)) {
+    // named pipe
+    return val;
+  }
+
+  if (port >= 0) {
+    // port number
+    return port;
+  }
+
+  return false;
+}
+
+/**
+ * Event listener for HTTP server "error" event.
+ */
+
+function onError(error) {
+  if (error.syscall !== 'listen') {
+    throw error;
+  }
+
+  const bind = typeof port === 'string'
+      ? 'Pipe ' + port
+      : 'Port ' + port;
+
+  // handle specific listen errors with friendly messages
+  switch (error.code) {
+    case 'EACCES':
+      console.error(bind + ' requires elevated privileges');
+      process.exit(1);
+      break;
+    case 'EADDRINUSE':
+      console.error(bind + ' is already in use');
+      process.exit(1);
+      break;
+    default:
+      throw error;
+  }
+}
+
+/**
+ * Event listener for HTTP server "listening" event.
+ */
+
+function onListening() {
+  const addr = server.address();
+  const bind = typeof addr === 'string'
+      ? 'pipe ' + addr
+      : 'port ' + addr.port;
+  debug('Listening on ' + bind);
+}
+
+// Set up sockets
+const io = socket(server, {
+  cors: {
+    origin: "http://localhost:4200",
+    methods: ["GET", "POST"]
+  },
+});
+
+//create an in-memory data store
+const games = {
+  gH67FBgs: {
+    players: [],
+    state: [
+      [0, 0, -1],
+      [1, 1, -1],
+      [0, 0, 0]
+    ]
+  }
+};
+
+io.on('connection', socket => {
+  console.log('connected');
+  socket.emit('games', Object.keys(games));
+  let previousId;
+
+  const safeJoin = currentId => {
+    // when user joins a new room, server makes him/her leave the previous room
+    socket.leave(previousId);
+    socket.join(currentId);
+    previousId = currentId;
+  };
+
+  socket.on('getGame', gameId => {
+    // join room
+    safeJoin(gameId);
+    const newGame = {};
+    newGame[gameId] = games[gameId];
+    // console.log('sending game', newGame);
+    socket.emit('game', newGame);
+  });
+
+
+  socket.on('addGame', () => {
+    // generate a random string as id
+    const gameId = shortid.generate();
+    // start with empty players
+    const players = [];
+    // start with empty state
+    const state = [
+      [0, 0, 0],
+      [0, 0, 0],
+      [0, 0, 0]
+    ];
+    // save the new game
+    games[gameId] = {
+      players: players,
+      state: state
+    }
+
+    // automatically join room
+    safeJoin(gameId);
+    // send the newly created game to the connecting client
+    const newGame = {};
+    newGame[gameId] = games[gameId];
+    socket.emit('game', newGame);
+
+    // send the updated games to all clients (broadcast)
+    io.emit('games', Object.keys(games));
+  });
+
+  socket.on('joinGame', (event) => {
+    if (games[event.gameId].players.length < 2) {
+      games[event.gameId].players.push(event.playerName);
+    }
+    // send new game info to everyone in that room
+    const newGame = {};
+    newGame[event.gameId] = games[event.gameId];
+    io.in(event.gameId).emit('game', newGame);
+  });
+
+  socket.on('playGame', (event) => {
+    const gameId = event.gameId;
+    const playerName = event.playerName;
+    const positionX = event.x;
+    const positionY = event.y;
+
+    // position must be empty and players must be 2
+    //&& games[gameId].players.length === 2
+    if (games[gameId].state[positionX][positionY] === 0 ) {
+      // player 1 made move
+      if (games[gameId].players[0] === playerName) {
+        games[gameId].state[positionX][positionY] = 1;
+      }
+      // player 2 made move
+      else if (games[gameId].players[1] === playerName){
+        games[gameId].state[positionX][positionY] = -1;
+      }
+
+      // send new game info to everyone in that room
+      const newGame = {};
+      newGame[gameId] = games[gameId];
+      io.in(event.gameId).emit('game', newGame);
+    }
+  });
+});
+
+
